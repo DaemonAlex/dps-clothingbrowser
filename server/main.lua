@@ -1,113 +1,184 @@
 --[[
     dps-clothingbrowser Server
     Handles outfit export file saving (JSON + wasabi Lua format)
+    Wasabi exports auto-merge genders: export "Patrol" on male, then "Patrol"
+    on female, and the same .lua file gets both genders filled in.
 ]]
 
--- Convert a parsed outfit table to a wasabi-formatted Lua string
--- ready to paste into wasabi_police/wasabi_ambulance config.lua uniforms table
-local function ConvertToWasabi(data)
-    local label = data.label or 'Unnamed Outfit'
-    local modelStr = data.model or 'mp_m_freemode_01'
-    local isMale = modelStr == 'mp_m_freemode_01'
-    local gender = isMale and 'male' or 'female'
+local resName = GetCurrentResourceName()
 
-    -- Determine minGrade
-    local minGrade = 0
-    if data.grades and #data.grades > 0 then
-        minGrade = data.grades[1]
-        for _, g in ipairs(data.grades) do
-            if g < minGrade then minGrade = g end
+-- ============================================================
+-- MANIFEST — tracks wasabi exports by label for gender merging
+-- ============================================================
+local MANIFEST_PATH = 'wasabi-exports/manifest.json'
+
+local function LoadManifest()
+    local raw = LoadResourceFile(resName, MANIFEST_PATH)
+    if raw and raw ~= '' then
+        return json.decode(raw) or {}
+    end
+    return {}
+end
+
+local function SaveManifest(manifest)
+    SaveResourceFile(resName, MANIFEST_PATH, json.encode(manifest, { indent = true }), -1)
+end
+
+-- ============================================================
+-- WASABI LUA GENERATION
+-- ============================================================
+local function BuildGenderBlock(genderName, genderData)
+    local lines = {}
+    table.insert(lines, string.format('        %s = {', genderName))
+    table.insert(lines, '            clothing = {')
+
+    if genderData and genderData.clothing then
+        for _, c in ipairs(genderData.clothing) do
+            table.insert(lines, string.format(
+                '                { component = %d, drawable = %d, texture = %d },',
+                c.component, c.drawable, c.texture
+            ))
         end
+    else
+        table.insert(lines, '                -- Not yet exported')
     end
 
-    -- Build clothing lines (components -> clothing, component_id -> component)
-    local clothingLines = {}
-    if data.components then
-        for _, c in ipairs(data.components) do
-            table.insert(clothingLines, string.format(
+    table.insert(lines, '            },')
+    table.insert(lines, '            props = {')
+
+    if genderData and genderData.props then
+        for _, p in ipairs(genderData.props) do
+            table.insert(lines, string.format(
                 '                { component = %d, drawable = %d, texture = %d },',
-                c.component_id, c.drawable, c.texture
+                p.component, p.drawable, p.texture
             ))
         end
     end
 
-    -- Build prop lines (prop_id -> component)
-    local propLines = {}
-    if data.props then
-        for _, p in ipairs(data.props) do
-            table.insert(propLines, string.format(
-                '                { component = %d, drawable = %d, texture = %d },',
-                p.prop_id, p.drawable, p.texture
-            ))
-        end
-    end
+    table.insert(lines, '            },')
+    table.insert(lines, '        },')
+    return lines
+end
 
-    -- Assemble the Lua table
-    local otherGender = isMale and 'female' or 'male'
-
+local function GenerateWasabiLua(entry)
     local lines = {}
     table.insert(lines, '    {')
-    table.insert(lines, string.format("        label = '%s',", label:gsub("'", "\\'")))
-    table.insert(lines, string.format('        minGrade = %d,', minGrade))
+    table.insert(lines, string.format("        label = '%s',", (entry.label or 'Unnamed'):gsub("'", "\\'")))
+    table.insert(lines, string.format('        minGrade = %d,', entry.minGrade or 0))
 
-    -- Active gender block
-    table.insert(lines, string.format('        %s = {', gender))
-    table.insert(lines, '            clothing = {')
-    for _, line in ipairs(clothingLines) do
+    -- Male block
+    for _, line in ipairs(BuildGenderBlock('male', entry.male)) do
         table.insert(lines, line)
     end
-    table.insert(lines, '            },')
-    table.insert(lines, '            props = {')
-    for _, line in ipairs(propLines) do
+
+    -- Female block
+    for _, line in ipairs(BuildGenderBlock('female', entry.female)) do
         table.insert(lines, line)
     end
-    table.insert(lines, '            },')
-    table.insert(lines, '        },')
-
-    -- Other gender placeholder
-    table.insert(lines, string.format('        %s = {', otherGender))
-    table.insert(lines, '            clothing = {')
-    table.insert(lines, '                -- TODO: export this gender from the clothing browser')
-    table.insert(lines, '            },')
-    table.insert(lines, '            props = {')
-    table.insert(lines, '            },')
-    table.insert(lines, '        },')
 
     table.insert(lines, '    },')
-
     return table.concat(lines, '\n')
 end
 
+-- Convert raw export data (dps-clothingbrowser format) into wasabi gender data
+local function ConvertToGenderData(parsed)
+    local clothing = {}
+    if parsed.components then
+        for _, c in ipairs(parsed.components) do
+            table.insert(clothing, {
+                component = c.component_id,
+                drawable = c.drawable,
+                texture = c.texture,
+            })
+        end
+    end
+
+    local props = {}
+    if parsed.props then
+        for _, p in ipairs(parsed.props) do
+            table.insert(props, {
+                component = p.prop_id,
+                drawable = p.drawable,
+                texture = p.texture,
+            })
+        end
+    end
+
+    return { clothing = clothing, props = props }
+end
+
+-- ============================================================
+-- EXPORT CALLBACK
+-- ============================================================
 lib.callback.register('dps-clothingbrowser:saveExport', function(source, jsonStr, name)
     local safeName = (name or 'outfit'):gsub('[^%w%-_]', '_')
     local timestamp = os.date('%Y%m%d_%H%M%S')
     local jsonFilename = string.format('exports/%s_%s.json', safeName, timestamp)
 
-    local success = SaveResourceFile(GetCurrentResourceName(), jsonFilename, jsonStr, -1)
+    local success = SaveResourceFile(resName, jsonFilename, jsonStr, -1)
+    if not success then return nil end
 
-    if success then
-        local playerName = GetPlayerName(source) or 'Unknown'
-        print(string.format('[dps-clothingbrowser] %s exported outfit: %s', playerName, jsonFilename))
+    local playerName = GetPlayerName(source) or 'Unknown'
+    print(string.format('[dps-clothingbrowser] %s exported outfit: %s', playerName, jsonFilename))
 
-        -- Also generate wasabi Lua format
-        local parsed = json.decode(jsonStr)
-        if parsed then
-            local wasabiLua = ConvertToWasabi(parsed)
-            local header = string.format(
-                '-- Wasabi uniform entry generated by dps-clothingbrowser\n'
-                .. '-- Source: %s\n'
-                .. '-- Paste this into your wasabi_police or wasabi_ambulance config.lua uniforms table\n\n',
-                jsonFilename
-            )
-            local luaFilename = string.format('wasabi-exports/%s_%s.lua', safeName, timestamp)
-            local luaSuccess = SaveResourceFile(GetCurrentResourceName(), luaFilename, header .. wasabiLua, -1)
-            if luaSuccess then
-                print(string.format('[dps-clothingbrowser] Wasabi format saved: %s', luaFilename))
-            end
+    -- Parse and generate wasabi format
+    local parsed = json.decode(jsonStr)
+    if not parsed then return jsonFilename end
+
+    local label = parsed.label or 'Unnamed Outfit'
+    local modelStr = parsed.model or 'mp_m_freemode_01'
+    local isMale = modelStr == 'mp_m_freemode_01'
+    local gender = isMale and 'male' or 'female'
+    local genderData = ConvertToGenderData(parsed)
+
+    -- Determine minGrade
+    local minGrade = 0
+    if parsed.grades and #parsed.grades > 0 then
+        minGrade = parsed.grades[1]
+        for _, g in ipairs(parsed.grades) do
+            if g < minGrade then minGrade = g end
         end
-
-        return jsonFilename
     end
 
-    return nil
+    -- Load manifest and merge
+    local manifest = LoadManifest()
+    local key = safeName:lower()
+
+    if not manifest[key] then
+        manifest[key] = {
+            label = label,
+            minGrade = minGrade,
+        }
+    end
+
+    -- Update the exported gender, preserve the other
+    manifest[key][gender] = genderData
+    manifest[key].label = label
+    manifest[key].minGrade = minGrade
+    SaveManifest(manifest)
+
+    -- Generate the wasabi Lua file (always overwrites with merged data)
+    local wasabiLua = GenerateWasabiLua(manifest[key])
+    local bothGenders = manifest[key].male and manifest[key].female
+    local statusLine = bothGenders
+        and '-- Status: COMPLETE (both genders exported)'
+        or  string.format('-- Status: %s exported, %s still needed',
+                gender, isMale and 'female' or 'male')
+
+    local header = string.format(
+        '-- Wasabi uniform entry generated by dps-clothingbrowser\n'
+        .. '-- Label: %s\n'
+        .. '%s\n'
+        .. '-- Paste this into your wasabi_police or wasabi_ambulance config.lua uniforms table\n\n',
+        label, statusLine
+    )
+
+    local luaFilename = string.format('wasabi-exports/%s.lua', key)
+    local luaSuccess = SaveResourceFile(resName, luaFilename, header .. wasabiLua, -1)
+    if luaSuccess then
+        local status = bothGenders and '(COMPLETE - both genders)' or string.format('(%s only)', gender)
+        print(string.format('[dps-clothingbrowser] Wasabi format saved: %s %s', luaFilename, status))
+    end
+
+    return jsonFilename
 end)
