@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DPS Clothing Browser</title>
+    <link rel="stylesheet" href="styles/main.css">
+</head>
+<body>
+    <div id="app" class="hidden">
+        <!-- Side Panel -->
+        <div class="panel">
+            <!-- Header -->
+            <div class="panel-header">
+                <div class="header-left">
+                    <h1>Clothing Browser</h1>
+                    <span id="model-badge" class="badge">MALE</span>
+                </div>
+                <button id="btn-close" class="btn-icon" title="Close (Escape)">&#x2715;</button>
+            </div>
+
+            <!-- Category Tabs -->
+            <div class="tab-bar">
+                <button class="tab active" data-tab="components">Components</button>
+                <button class="tab" data-tab="props">Props</button>
+            </div>
+
+            <!-- Slot Grid -->
+            <div class="section">
+                <div id="slot-grid" class="slot-grid">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+
+            <!-- Browse Controls -->
+            <div id="browse-controls" class="section browse-controls hidden">
+                <div class="browse-header">
+                    <span id="browse-slot-name" class="browse-slot-name">Tops</span>
+                    <button id="btn-reset-camera" class="btn-small" title="Reset camera to full body">Full Body</button>
+                </div>
+
+                <div class="browse-row">
+                    <label>Drawable</label>
+                    <div class="browse-nav">
+                        <button class="btn-arrow" data-action="drawable-prev" title="Previous drawable (Left Arrow)">&lsaquo;</button>
+                        <span id="drawable-display" class="browse-value">0 / 0</span>
+                        <button class="btn-arrow" data-action="drawable-next" title="Next drawable (Right Arrow)">&rsaquo;</button>
+                    </div>
+                </div>
+
+                <div class="browse-row">
+                    <label>Texture</label>
+                    <div class="browse-nav">
+                        <button class="btn-arrow" data-action="texture-prev" title="Previous texture (Down Arrow)">&lsaquo;</button>
+                        <span id="texture-display" class="browse-value">0 / 0</span>
+                        <button class="btn-arrow" data-action="texture-next" title="Next texture (Up Arrow)">&rsaquo;</button>
+                    </div>
+                </div>
+
+                <div class="browse-row jump-row">
+                    <label>Jump to ID</label>
+                    <div class="jump-input-wrap">
+                        <input type="number" id="jump-input" class="input-small" min="0" placeholder="ID">
+                        <button id="btn-jump" class="btn-small">Go</button>
+                    </div>
+                </div>
+
+                <button id="btn-save-piece" class="btn-primary">Save Piece (E)</button>
+
+                <div class="keyboard-hints">
+                    <span>&larr;&rarr; Drawable</span>
+                    <span>&uarr;&darr; Texture</span>
+                    <span>Shift +10</span>
+                    <span>E Save</span>
+                </div>
+            </div>
+
+            <!-- Outfit List -->
+            <div class="section">
+                <div class="section-header" id="outfit-header">
+                    <h2>Saved Pieces <span id="saved-count">(0)</span></h2>
+                    <button id="btn-clear-all" class="btn-small btn-danger hidden">Clear All</button>
+                </div>
+                <div id="outfit-list" class="outfit-list">
+                    <div class="empty-state">No pieces saved yet</div>
+                </div>
+            </div>
+
+            <!-- Export Bar -->
+            <div class="export-bar">
+                <button id="btn-snapshot" class="btn-secondary">Snapshot Current</button>
+                <button id="btn-export" class="btn-primary">Export Saved</button>
+                <button id="btn-restore" class="btn-secondary">Restore Original</button>
+            </div>
+        </div>
+
+        <!-- Export Modal -->
+        <div id="export-modal" class="modal-overlay hidden">
+            <div class="modal">
+                <div class="modal-header">
+                    <h2>Export Outfit</h2>
+                    <button id="btn-modal-close" class="btn-icon">&#x2715;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label for="export-label">Outfit Label</label>
+                        <input type="text" id="export-label" class="input" placeholder="e.g. LSPD Patrol Uniform">
+                    </div>
+                    <div class="form-group">
+                        <label for="export-job">Job Name <span class="optional">(optional)</span></label>
+                        <input type="text" id="export-job" class="input" placeholder="e.g. police">
+                    </div>
+                    <div class="form-group">
+                        <label for="export-grades">Grades <span class="optional">(comma-separated, optional)</span></label>
+                        <input type="text" id="export-grades" class="input" placeholder="e.g. 0,1,2,3">
+                    </div>
+                    <div class="form-group">
+                        <label>JSON Preview</label>
+                        <pre id="export-preview" class="json-preview"></pre>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="btn-copy-json" class="btn-secondary">Copy JSON</button>
+                    <button id="btn-save-export" class="btn-primary">Save to Server</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast Container -->
+        <div id="toast-container" class="toast-container"></div>
+    </div>
+
+    <script src="js/utils.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

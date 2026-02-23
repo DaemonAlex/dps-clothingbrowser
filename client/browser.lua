@@ -1,29 +1,32 @@
 --[[
-    dps-clothingbrowser v1.0
-    Admin tool for browsing, identifying, and exporting clothing/uniform configurations
+    dps-clothingbrowser v2.0
+    NUI-based admin tool for browsing, identifying, and exporting clothing/uniform configurations
 
     Commands:
-        /cb             Open the clothing browser menu
-        /clothingbrowser  Alias
+        /cb               Open the clothing browser
+        /clothingbrowser   Alias
 
-    Browse mode controls:
+    Controls (handled in NUI JavaScript — no game key conflicts):
         Left/Right Arrow    Cycle drawable (+/- 1, hold SHIFT for +/- 10)
         Up/Down Arrow       Cycle texture
         E                   Save current piece to outfit builder
-        Backspace           Exit browse mode
+        Escape              Close browser
 ]]
 
 -- ============================================================
 -- STATE
 -- ============================================================
-local BrowsingActive = false
-local BrowseType = nil   -- 'component' or 'prop'
-local BrowseSlot = nil   -- component_id (0-11) or prop_id (0,1,2,6,7)
+local IsOpen = false
+local BrowseType = nil          -- 'component' or 'prop'
+local BrowseSlot = nil          -- slot ID
 local CurrentDrawable = 0
 local CurrentTexture = 0
 local SavedOutfit = { components = {}, props = {} }
 local OriginalAppearance = nil
-local SavedCount = 0
+local BasePedHeading = 0.0
+
+-- Camera state
+local BrowserCam = nil
 
 -- ============================================================
 -- HELPERS
@@ -34,13 +37,13 @@ local function SaveCurrentAppearance()
     for i = 0, 11 do
         app.components[i] = {
             drawable = GetPedDrawableVariation(ped, i),
-            texture = GetPedTextureVariation(ped, i)
+            texture = GetPedTextureVariation(ped, i),
         }
     end
     for _, id in ipairs(Config.PropIds) do
         app.props[id] = {
             drawable = GetPedPropIndex(ped, id),
-            texture = GetPedPropTextureIndex(ped, id)
+            texture = GetPedPropTextureIndex(ped, id),
         }
     end
     return app
@@ -98,35 +101,124 @@ local function ApplySelection()
     end
 end
 
-local function UpdateOverlay()
-    lib.hideTextUI()
-    local maxDrawable = GetMaxDrawable()
-    local maxTexture = math.max(0, GetMaxTexture())
-    local slotName = BrowseType == 'component'
-        and Config.ComponentNames[BrowseSlot]
-        or Config.PropNames[BrowseSlot]
+local function GetBrowseResult()
+    return {
+        drawable = CurrentDrawable,
+        texture = CurrentTexture,
+        maxDrawable = math.max(0, GetMaxDrawable()),
+        maxTexture = math.max(0, GetMaxTexture()),
+    }
+end
 
-    local savedMark = ''
-    if BrowseType == 'component' and SavedOutfit.components[BrowseSlot] then
-        local s = SavedOutfit.components[BrowseSlot]
-        savedMark = string.format('  |  Saved: %d:%d', s.drawable, s.texture)
-    elseif BrowseType == 'prop' and SavedOutfit.props[BrowseSlot] then
-        local s = SavedOutfit.props[BrowseSlot]
-        savedMark = string.format('  |  Saved: %d:%d', s.drawable, s.texture)
+local function GetSlotMeta()
+    local ped = PlayerPedId()
+    local meta = { components = {}, props = {} }
+
+    for i = 0, 11 do
+        meta.components[tostring(i)] = {
+            drawable = GetPedDrawableVariation(ped, i),
+            texture = GetPedTextureVariation(ped, i),
+        }
+    end
+    for _, id in ipairs(Config.PropIds) do
+        meta.props[tostring(id)] = {
+            drawable = GetPedPropIndex(ped, id),
+            texture = GetPedPropTextureIndex(ped, id),
+        }
     end
 
-    lib.showTextUI(string.format(
-        '[%s %d] %s\nDrawable: %d / %d  |  Texture: %d / %d%s\nArrows: Navigate (SHIFT x10)  |  [E] Save  |  [Backspace] Exit',
-        BrowseType == 'component' and 'Comp' or 'Prop',
-        BrowseSlot,
-        slotName or 'Unknown',
-        CurrentDrawable, maxDrawable,
-        CurrentTexture, maxTexture,
-        savedMark
-    ), {
-        position = 'top-center',
-        icon = 'shirt'
-    })
+    return meta
+end
+
+local function GetSavedPiecesForNUI()
+    local data = { components = {}, props = {} }
+    for id, v in pairs(SavedOutfit.components) do
+        data.components[tostring(id)] = { drawable = v.drawable, texture = v.texture }
+    end
+    for id, v in pairs(SavedOutfit.props) do
+        data.props[tostring(id)] = { drawable = v.drawable, texture = v.texture }
+    end
+    return data
+end
+
+-- ============================================================
+-- CAMERA SYSTEM
+-- ============================================================
+local function CreateBrowserCamera(offsetData)
+    local ped = PlayerPedId()
+    local pedPos = GetEntityCoords(ped)
+    local heading = BasePedHeading
+    local hr = math.rad(heading)
+
+    local off = offsetData.offset
+    -- Rotate offset by ped heading so camera is always in front
+    local camX = pedPos.x + off.x * math.cos(hr) - off.y * math.sin(hr)
+    local camY = pedPos.y + off.x * math.sin(hr) + off.y * math.cos(hr)
+    local camZ = pedPos.z + off.z
+
+    local cam = CreateCam('DEFAULT_SCRIPTED_CAMERA', true)
+    SetCamCoord(cam, camX, camY, camZ)
+
+    -- Camera rotation: add ped heading to the Z rotation so it faces the ped
+    local rot = offsetData.rotation
+    SetCamRot(cam, rot.x, rot.y, heading + rot.z, 2)
+    SetCamFov(cam, offsetData.fov)
+
+    return cam
+end
+
+local function MoveCameraToSlot(slotType, slotId)
+    local offsets = slotType == 'component'
+        and Config.CameraOffsets.components[slotId]
+        or  Config.CameraOffsets.props[slotId]
+
+    if not offsets then
+        offsets = Config.CameraOffsets.default
+    end
+
+    -- Reset ped heading before moving camera to prevent drift
+    local ped = PlayerPedId()
+    SetEntityHeading(ped, BasePedHeading)
+
+    local newCam = CreateBrowserCamera(offsets)
+
+    if BrowserCam then
+        SetCamActiveWithInterp(newCam, BrowserCam, 500, 1, 1)
+        Wait(500)
+        DestroyCam(BrowserCam, false)
+    else
+        SetCamActive(newCam, true)
+        RenderScriptCams(true, true, 500, true, false)
+    end
+
+    BrowserCam = newCam
+end
+
+local function DestroyBrowserCamera()
+    if BrowserCam then
+        RenderScriptCams(false, true, 500, true, false)
+        DestroyCam(BrowserCam, false)
+        BrowserCam = nil
+    end
+end
+
+local function ResetCameraToFullBody()
+    local offsets = Config.CameraOffsets.default
+    local ped = PlayerPedId()
+    SetEntityHeading(ped, BasePedHeading)
+
+    local newCam = CreateBrowserCamera(offsets)
+
+    if BrowserCam then
+        SetCamActiveWithInterp(newCam, BrowserCam, 500, 1, 1)
+        Wait(500)
+        DestroyCam(BrowserCam, false)
+    else
+        SetCamActive(newCam, true)
+        RenderScriptCams(true, true, 500, true, false)
+    end
+
+    BrowserCam = newCam
 end
 
 -- ============================================================
@@ -141,7 +233,7 @@ local function GetCurrentFullAppearance()
         table.insert(components, {
             component_id = i,
             drawable = GetPedDrawableVariation(ped, i),
-            texture = GetPedTextureVariation(ped, i)
+            texture = GetPedTextureVariation(ped, i),
         })
     end
 
@@ -149,540 +241,293 @@ local function GetCurrentFullAppearance()
         table.insert(props, {
             prop_id = id,
             drawable = GetPedPropIndex(ped, id),
-            texture = GetPedPropTextureIndex(ped, id)
+            texture = GetPedPropTextureIndex(ped, id),
         })
     end
 
     return { components = components, props = props }
 end
 
-local function FormatOutfitJSON(outfit, label, job, grades)
-    local isMale = GetEntityModel(PlayerPedId()) == GetHashKey('mp_m_freemode_01')
-    local model = isMale and 'mp_m_freemode_01' or 'mp_f_freemode_01'
+local function BuildSavedOutfitExport()
+    local outfit = { components = {}, props = {} }
 
-    local lines = {}
-    table.insert(lines, '{')
-    table.insert(lines, string.format('  "label": "%s",', label or 'Unnamed Outfit'))
-    table.insert(lines, string.format('  "model": "%s",', model))
-
-    if job and job ~= '' then
-        table.insert(lines, string.format('  "job": "%s",', job))
+    for id, data in pairs(SavedOutfit.components) do
+        table.insert(outfit.components, {
+            component_id = id,
+            drawable = data.drawable,
+            texture = data.texture,
+        })
     end
-    if grades and #grades > 0 then
-        table.insert(lines, string.format('  "grades": [%s],', table.concat(grades, ', ')))
+    for id, data in pairs(SavedOutfit.props) do
+        table.insert(outfit.props, {
+            prop_id = id,
+            drawable = data.drawable,
+            texture = data.texture,
+        })
     end
 
-    table.insert(lines, '  "components": [')
-    for i, c in ipairs(outfit.components) do
-        local comma = i < #outfit.components and ',' or ''
-        table.insert(lines, string.format(
-            '    {"component_id": %d, "drawable": %d, "texture": %d}%s',
-            c.component_id, c.drawable, c.texture, comma
-        ))
-    end
-    table.insert(lines, '  ],')
+    table.sort(outfit.components, function(a, b) return a.component_id < b.component_id end)
+    table.sort(outfit.props, function(a, b) return a.prop_id < b.prop_id end)
 
-    table.insert(lines, '  "props": [')
-    for i, p in ipairs(outfit.props) do
-        local comma = i < #outfit.props and ',' or ''
-        table.insert(lines, string.format(
-            '    {"prop_id": %d, "drawable": %d, "texture": %d}%s',
-            p.prop_id, p.drawable, p.texture, comma
-        ))
-    end
-    table.insert(lines, '  ]')
-    table.insert(lines, '}')
-
-    return table.concat(lines, '\n')
-end
-
-local function ExportOutfit(outfit, label, job, grades)
-    local jsonStr = FormatOutfitJSON(outfit, label, job, grades)
-
-    -- Print to F8 console
-    print('^2--- OUTFIT EXPORT: ' .. (label or 'Unnamed') .. ' ---^0')
-    print(jsonStr)
-    print('^2--- END EXPORT ---^0')
-
-    -- Save server-side
-    lib.callback('dps-clothingbrowser:saveExport', false, function(path)
-        if path then
-            lib.notify({
-                title = 'Outfit Exported',
-                description = 'Saved to: ' .. path .. '\nAlso printed to F8 console',
-                type = 'success',
-                duration = 8000
-            })
-        end
-    end, jsonStr, label or ('outfit_' .. os.time()))
-
-    -- Show in alert dialog
-    lib.alertDialog({
-        header = 'Outfit Export (qs-appearance format)',
-        content = jsonStr .. '\n\nAlso printed to F8 console and saved server-side.',
-        centered = true
-    })
+    return outfit
 end
 
 -- ============================================================
--- BROWSE MODE
+-- OPEN / CLOSE
 -- ============================================================
-local OpenComponentMenu, OpenPropMenu, OpenMainMenu
+local function OpenBrowser()
+    if IsOpen then return end
+    IsOpen = true
 
-local function StartBrowse(browseType, slot, initialDrawable)
-    if BrowsingActive then return end
-    BrowsingActive = true
-    BrowseType = browseType
-    BrowseSlot = slot
+    local ped = PlayerPedId()
 
-    if initialDrawable then
-        CurrentDrawable = initialDrawable
-        CurrentTexture = 0
-    else
-        local ped = PlayerPedId()
-        if browseType == 'component' then
-            CurrentDrawable = GetPedDrawableVariation(ped, slot)
-            CurrentTexture = GetPedTextureVariation(ped, slot)
-        else
-            CurrentDrawable = GetPedPropIndex(ped, slot)
-            CurrentTexture = GetPedPropTextureIndex(ped, slot)
-            if CurrentDrawable < 0 then CurrentDrawable = 0 end
-        end
-    end
-
+    -- Save original appearance
     if not OriginalAppearance then
         OriginalAppearance = SaveCurrentAppearance()
     end
 
-    ApplySelection()
-    UpdateOverlay()
+    -- Store base heading
+    BasePedHeading = GetEntityHeading(ped)
 
+    -- Freeze player
+    FreezeEntityPosition(ped, true)
+
+    -- Determine model
+    local isMale = GetEntityModel(ped) == GetHashKey('mp_m_freemode_01')
+
+    -- Start with full body camera
     CreateThread(function()
-        while BrowsingActive do
-            Wait(0)
-
-            local maxDrawable = GetMaxDrawable()
-            local maxTexture = GetMaxTexture()
-            local changed = false
-            local shift = IsControlPressed(0, 21) -- SHIFT
-
-            -- Disable most controls, keep movement and camera
-            DisableAllControlActions(0)
-            EnableControlAction(0, 1, true)   -- Look LR
-            EnableControlAction(0, 2, true)   -- Look UD
-            EnableControlAction(0, 30, true)  -- Move LR (A/D)
-            EnableControlAction(0, 31, true)  -- Move UD (W/S)
-            EnableControlAction(0, 21, true)  -- Sprint (Shift)
-            EnableControlAction(0, 22, true)  -- Jump (Space)
-            EnableControlAction(0, 245, true) -- Chat (T)
-            EnableControlAction(0, 249, true) -- Push to talk (N)
-
-            -- Right arrow: +1 drawable (SHIFT = +10)
-            if IsDisabledControlJustPressed(0, 175) then
-                local step = shift and 10 or 1
-                CurrentDrawable = CurrentDrawable + step
-                if CurrentDrawable > maxDrawable then
-                    CurrentDrawable = shift and maxDrawable or 0
-                end
-                CurrentTexture = 0
-                changed = true
-            end
-
-            -- Left arrow: -1 drawable (SHIFT = -10)
-            if IsDisabledControlJustPressed(0, 174) then
-                local step = shift and 10 or 1
-                CurrentDrawable = CurrentDrawable - step
-                if CurrentDrawable < 0 then
-                    CurrentDrawable = shift and 0 or maxDrawable
-                end
-                CurrentTexture = 0
-                changed = true
-            end
-
-            -- Up arrow: +1 texture
-            if IsDisabledControlJustPressed(0, 172) then
-                CurrentTexture = CurrentTexture + 1
-                if CurrentTexture > maxTexture then CurrentTexture = 0 end
-                changed = true
-            end
-
-            -- Down arrow: -1 texture
-            if IsDisabledControlJustPressed(0, 173) then
-                CurrentTexture = CurrentTexture - 1
-                if CurrentTexture < 0 then CurrentTexture = maxTexture end
-                changed = true
-            end
-
-            -- E: Save piece to outfit builder
-            if IsDisabledControlJustPressed(0, 38) then
-                if browseType == 'component' then
-                    if not SavedOutfit.components[BrowseSlot] then
-                        SavedCount = SavedCount + 1
-                    end
-                    SavedOutfit.components[BrowseSlot] = {
-                        drawable = CurrentDrawable,
-                        texture = CurrentTexture
-                    }
-                else
-                    if not SavedOutfit.props[BrowseSlot] then
-                        SavedCount = SavedCount + 1
-                    end
-                    SavedOutfit.props[BrowseSlot] = {
-                        drawable = CurrentDrawable,
-                        texture = CurrentTexture
-                    }
-                end
-                lib.notify({
-                    title = 'Piece Saved',
-                    description = string.format('%s: drawable %d, texture %d',
-                        browseType == 'component'
-                            and Config.ComponentNames[BrowseSlot]
-                            or Config.PropNames[BrowseSlot],
-                        CurrentDrawable, CurrentTexture
-                    ),
-                    type = 'success'
-                })
-                UpdateOverlay()
-            end
-
-            -- Backspace: Exit browse mode
-            if IsDisabledControlJustPressed(0, 177) then
-                BrowsingActive = false
-            end
-
-            if changed then
-                ApplySelection()
-                UpdateOverlay()
-            end
-        end
-
-        lib.hideTextUI()
-
-        -- Return to the slot selection menu
-        Wait(200)
-        if BrowseType == 'component' then
-            OpenComponentMenu()
-        else
-            OpenPropMenu()
-        end
+        ResetCameraToFullBody()
     end)
+
+    -- Gather slot metadata
+    local slotMeta = GetSlotMeta()
+    local savedPieces = GetSavedPiecesForNUI()
+
+    -- Open NUI
+    SetNuiFocus(true, true)
+    SendNUIMessage({
+        action = 'open',
+        model = isMale and 'male' or 'female',
+        slotMeta = slotMeta,
+        savedPieces = savedPieces,
+    })
+end
+
+local function CloseBrowser()
+    if not IsOpen then return end
+    IsOpen = false
+
+    -- Release NUI
+    SetNuiFocus(false, false)
+    SendNUIMessage({ action = 'close' })
+
+    -- Destroy camera
+    DestroyBrowserCamera()
+
+    -- Unfreeze player
+    local ped = PlayerPedId()
+    FreezeEntityPosition(ped, false)
+
+    -- Reset state
+    BrowseType = nil
+    BrowseSlot = nil
 end
 
 -- ============================================================
--- MENUS
+-- NUI CALLBACKS
 -- ============================================================
-local OpenOutfitBuilder
+RegisterNUICallback('close', function(_, cb)
+    CloseBrowser()
+    cb({ ok = true })
+end)
 
-OpenComponentMenu = function()
+RegisterNUICallback('selectSlot', function(data, cb)
+    BrowseType = data.type
+    BrowseSlot = data.id
+
     local ped = PlayerPedId()
-    local options = {}
-
-    for _, id in ipairs(Config.UniformComponents) do
-        local current = GetPedDrawableVariation(ped, id)
-        local max = GetNumberOfPedDrawableVariations(ped, id)
-        local saved = SavedOutfit.components[id]
-
-        table.insert(options, {
-            title = string.format('[%d] %s', id, Config.ComponentNames[id]),
-            description = string.format(
-                'Current: %d | Total: %d%s',
-                current, max,
-                saved and string.format(' | Saved: %d:%d', saved.drawable, saved.texture) or ''
-            ),
-            icon = 'shirt',
-            onSelect = function()
-                StartBrowse('component', id)
-            end
-        })
+    if BrowseType == 'component' then
+        CurrentDrawable = GetPedDrawableVariation(ped, BrowseSlot)
+        CurrentTexture = GetPedTextureVariation(ped, BrowseSlot)
+    else
+        CurrentDrawable = GetPedPropIndex(ped, BrowseSlot)
+        CurrentTexture = GetPedPropTextureIndex(ped, BrowseSlot)
+        if CurrentDrawable < 0 then CurrentDrawable = 0 end
     end
 
-    lib.registerContext({
-        id = 'cb_components',
-        title = 'Browse Components',
-        menu = 'cb_main',
-        options = options
-    })
-    lib.showContext('cb_components')
-end
+    -- Move camera to this slot
+    CreateThread(function()
+        MoveCameraToSlot(BrowseType, BrowseSlot)
+    end)
 
-OpenPropMenu = function()
-    local ped = PlayerPedId()
-    local options = {}
+    cb(GetBrowseResult())
+end)
 
-    for _, id in ipairs(Config.PropIds) do
-        local current = GetPedPropIndex(ped, id)
-        local max = GetNumberOfPedPropDrawableVariations(ped, id)
-        local saved = SavedOutfit.props[id]
-
-        table.insert(options, {
-            title = string.format('[%d] %s', id, Config.PropNames[id]),
-            description = string.format(
-                'Current: %d | Total: %d%s',
-                current, max,
-                saved and string.format(' | Saved: %d:%d', saved.drawable, saved.texture) or ''
-            ),
-            icon = 'hat-wizard',
-            onSelect = function()
-                StartBrowse('prop', id)
-            end
-        })
+RegisterNUICallback('changeDrawable', function(data, cb)
+    if not BrowseType or not BrowseSlot then
+        cb({ drawable = 0, texture = 0, maxDrawable = 0, maxTexture = 0 })
+        return
     end
 
-    lib.registerContext({
-        id = 'cb_props',
-        title = 'Browse Props',
-        menu = 'cb_main',
-        options = options
-    })
-    lib.showContext('cb_props')
-end
+    local delta = data.delta or 0
+    local maxDrawable = GetMaxDrawable()
 
-OpenOutfitBuilder = function()
-    local options = {}
-
-    -- Show saved components
-    for _, id in ipairs(Config.UniformComponents) do
-        local data = SavedOutfit.components[id]
-        if data then
-            table.insert(options, {
-                title = string.format('%s: %d:%d',
-                    Config.ComponentNames[id] or ('Comp ' .. id),
-                    data.drawable, data.texture
-                ),
-                description = string.format(
-                    'Component %d | Drawable %d | Texture %d (click to remove)',
-                    id, data.drawable, data.texture
-                ),
-                icon = 'check',
-                onSelect = function()
-                    SavedOutfit.components[id] = nil
-                    SavedCount = SavedCount - 1
-                    lib.notify({
-                        title = 'Removed',
-                        description = Config.ComponentNames[id] .. ' removed from outfit',
-                        type = 'inform'
-                    })
-                    OpenOutfitBuilder()
-                end
-            })
+    CurrentDrawable = CurrentDrawable + delta
+    if CurrentDrawable > maxDrawable then
+        -- If jumped past max (shift+10), clamp or wrap
+        if math.abs(delta) > 1 then
+            CurrentDrawable = maxDrawable
+        else
+            CurrentDrawable = 0
+        end
+    elseif CurrentDrawable < 0 then
+        if math.abs(delta) > 1 then
+            CurrentDrawable = 0
+        else
+            CurrentDrawable = maxDrawable
         end
     end
 
-    -- Show saved props
-    for _, id in ipairs(Config.PropIds) do
-        local data = SavedOutfit.props[id]
-        if data then
-            table.insert(options, {
-                title = string.format('%s: %d:%d',
-                    Config.PropNames[id] or ('Prop ' .. id),
-                    data.drawable, data.texture
-                ),
-                description = string.format(
-                    'Prop %d | Drawable %d | Texture %d (click to remove)',
-                    id, data.drawable, data.texture
-                ),
-                icon = 'check',
-                onSelect = function()
-                    SavedOutfit.props[id] = nil
-                    SavedCount = SavedCount - 1
-                    lib.notify({
-                        title = 'Removed',
-                        description = Config.PropNames[id] .. ' removed from outfit',
-                        type = 'inform'
-                    })
-                    OpenOutfitBuilder()
-                end
-            })
+    CurrentTexture = 0
+    ApplySelection()
+    cb(GetBrowseResult())
+end)
+
+RegisterNUICallback('changeTexture', function(data, cb)
+    if not BrowseType or not BrowseSlot then
+        cb({ texture = 0, maxTexture = 0 })
+        return
+    end
+
+    local delta = data.delta or 0
+    local maxTexture = GetMaxTexture()
+
+    CurrentTexture = CurrentTexture + delta
+    if CurrentTexture > maxTexture then
+        CurrentTexture = 0
+    elseif CurrentTexture < 0 then
+        CurrentTexture = maxTexture
+    end
+
+    ApplySelection()
+    cb({ texture = CurrentTexture, maxTexture = math.max(0, GetMaxTexture()) })
+end)
+
+RegisterNUICallback('jumpToDrawable', function(data, cb)
+    if not BrowseType or not BrowseSlot then
+        cb({ drawable = 0, texture = 0, maxDrawable = 0, maxTexture = 0 })
+        return
+    end
+
+    local target = data.drawable or 0
+    local maxDrawable = GetMaxDrawable()
+
+    if target > maxDrawable then target = maxDrawable end
+    if target < 0 then target = 0 end
+
+    CurrentDrawable = target
+    CurrentTexture = 0
+    ApplySelection()
+    cb(GetBrowseResult())
+end)
+
+RegisterNUICallback('savePiece', function(data, cb)
+    local browseType = data.type
+    local slotId = data.id
+
+    if browseType == 'component' then
+        SavedOutfit.components[slotId] = {
+            drawable = data.drawable,
+            texture = data.texture,
+        }
+    else
+        SavedOutfit.props[slotId] = {
+            drawable = data.drawable,
+            texture = data.texture,
+        }
+    end
+
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('removePiece', function(data, cb)
+    if data.type == 'component' then
+        SavedOutfit.components[data.id] = nil
+    else
+        SavedOutfit.props[data.id] = nil
+    end
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('clearAllPieces', function(_, cb)
+    SavedOutfit = { components = {}, props = {} }
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('resetCamera', function(_, cb)
+    CreateThread(function()
+        ResetCameraToFullBody()
+    end)
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('getExportData', function(data, cb)
+    if data.mode == 'snapshot' then
+        cb(GetCurrentFullAppearance())
+    elseif data.mode == 'saved' then
+        cb(BuildSavedOutfitExport())
+    else
+        cb({})
+    end
+end)
+
+RegisterNUICallback('confirmExport', function(data, cb)
+    local jsonStr = data.json
+    local label = data.label or ('outfit_' .. os.time())
+
+    -- Print to F8 console
+    print('^2--- OUTFIT EXPORT: ' .. label .. ' ---^0')
+    print(jsonStr)
+    print('^2--- END EXPORT ---^0')
+
+    -- Save server-side via ox_lib callback
+    lib.callback('dps-clothingbrowser:saveExport', false, function(path)
+        if path then
+            cb({ ok = true, path = path })
+        else
+            cb({ ok = false })
         end
-    end
+    end, jsonStr, label:gsub('[^%w%-_ ]', '_'))
+end)
 
-    if SavedCount == 0 then
-        table.insert(options, {
-            title = 'No pieces saved yet',
-            description = 'Use [E] while browsing to save pieces',
-            icon = 'info-circle',
-            disabled = true
-        })
-    end
-
-    -- Export saved pieces
-    table.insert(options, {
-        title = 'Export Saved Pieces',
-        description = 'Export saved pieces as qs-appearance format',
-        icon = 'file-export',
-        onSelect = function()
-            if SavedCount == 0 then
-                lib.notify({ title = 'Nothing to export', type = 'error' })
-                return
-            end
-
-            local input = lib.inputDialog('Export Outfit', {
-                { type = 'input', label = 'Outfit Label', placeholder = 'e.g. LSPD Patrol Uniform' },
-                { type = 'input', label = 'Job Name (optional)', placeholder = 'e.g. police' },
-                { type = 'input', label = 'Grades (comma-separated, optional)', placeholder = 'e.g. 0,1,2,3' },
-            })
-            if not input then return end
-
-            -- Build outfit from saved pieces
-            local outfit = { components = {}, props = {} }
-            for id, data in pairs(SavedOutfit.components) do
-                table.insert(outfit.components, {
-                    component_id = id,
-                    drawable = data.drawable,
-                    texture = data.texture
-                })
-            end
-            for id, data in pairs(SavedOutfit.props) do
-                table.insert(outfit.props, {
-                    prop_id = id,
-                    drawable = data.drawable,
-                    texture = data.texture
-                })
-            end
-
-            -- Sort by ID for clean output
-            table.sort(outfit.components, function(a, b) return a.component_id < b.component_id end)
-            table.sort(outfit.props, function(a, b) return a.prop_id < b.prop_id end)
-
-            local grades = nil
-            if input[3] and input[3] ~= '' then
-                grades = {}
-                for g in input[3]:gmatch('%d+') do
-                    table.insert(grades, tonumber(g))
-                end
-            end
-
-            ExportOutfit(outfit, input[1], input[2], grades)
-        end
-    })
-
-    -- Clear all
-    if SavedCount > 0 then
-        table.insert(options, {
-            title = 'Clear All Saved',
-            description = 'Remove all saved pieces',
-            icon = 'trash',
-            onSelect = function()
-                SavedOutfit = { components = {}, props = {} }
-                SavedCount = 0
-                lib.notify({ title = 'Cleared', description = 'All saved pieces removed', type = 'inform' })
-                OpenOutfitBuilder()
-            end
-        })
-    end
-
-    lib.registerContext({
-        id = 'cb_outfit',
-        title = string.format('Outfit Builder (%d pieces)', SavedCount),
-        menu = 'cb_main',
-        options = options
-    })
-    lib.showContext('cb_outfit')
-end
-
-OpenMainMenu = function()
-    local options = {
-        {
-            title = 'Browse Components',
-            description = 'Tops, pants, shoes, vests, masks, etc.',
-            icon = 'shirt',
-            onSelect = OpenComponentMenu
-        },
-        {
-            title = 'Browse Props',
-            description = 'Hats, glasses, ears, watches, bracelets',
-            icon = 'hat-wizard',
-            onSelect = OpenPropMenu
-        },
-        {
-            title = 'Jump to Drawable',
-            description = 'Go directly to a specific slot + drawable ID',
-            icon = 'hashtag',
-            onSelect = function()
-                local typeOptions = {
-                    { value = 'component', label = 'Component' },
-                    { value = 'prop', label = 'Prop' },
-                }
-                local input = lib.inputDialog('Jump to Drawable', {
-                    { type = 'select', label = 'Type', options = typeOptions },
-                    { type = 'number', label = 'Slot ID (Comp: 0-11 | Prop: 0,1,2,6,7)', default = 11 },
-                    { type = 'number', label = 'Drawable ID', default = 0 },
-                })
-                if not input or not input[1] or not input[2] or not input[3] then return end
-
-                local browseType = input[1]
-                local slot = math.floor(input[2])
-                local drawable = math.floor(input[3])
-
-                StartBrowse(browseType, slot, drawable)
-            end
-        },
-        {
-            title = string.format('Outfit Builder (%d pieces)', SavedCount),
-            description = 'View, manage, and export saved outfit pieces',
-            icon = 'clipboard-list',
-            onSelect = OpenOutfitBuilder
-        },
-        {
-            title = 'Snapshot Current Look',
-            description = 'Export ALL current clothing as qs-appearance format',
-            icon = 'camera',
-            onSelect = function()
-                local input = lib.inputDialog('Snapshot Export', {
-                    { type = 'input', label = 'Outfit Label', placeholder = 'e.g. LSPD Patrol Uniform' },
-                    { type = 'input', label = 'Job Name (optional)', placeholder = 'e.g. police' },
-                    { type = 'input', label = 'Grades (comma-separated, optional)', placeholder = 'e.g. 0,1,2,3' },
-                })
-                if not input then return end
-
-                local outfit = GetCurrentFullAppearance()
-                local grades = nil
-                if input[3] and input[3] ~= '' then
-                    grades = {}
-                    for g in input[3]:gmatch('%d+') do
-                        table.insert(grades, tonumber(g))
-                    end
-                end
-
-                ExportOutfit(outfit, input[1], input[2], grades)
-            end
-        },
-    }
-
+RegisterNUICallback('restoreOriginal', function(_, cb)
     if OriginalAppearance then
-        table.insert(options, {
-            title = 'Restore Original',
-            description = 'Revert all appearance changes made this session',
-            icon = 'undo',
-            onSelect = function()
-                RestoreAppearance(OriginalAppearance)
-                OriginalAppearance = nil
-                lib.notify({
-                    title = 'Restored',
-                    description = 'Original appearance restored',
-                    type = 'success'
-                })
-            end
-        })
+        RestoreAppearance(OriginalAppearance)
+        OriginalAppearance = nil
+        cb({ ok = true, slotMeta = GetSlotMeta() })
+    else
+        cb({ ok = false })
     end
-
-    lib.registerContext({
-        id = 'cb_main',
-        title = 'Clothing Browser',
-        options = options
-    })
-    lib.showContext('cb_main')
-end
+end)
 
 -- ============================================================
 -- COMMANDS
 -- ============================================================
 RegisterCommand('cb', function()
-    OpenMainMenu()
+    if IsOpen then
+        CloseBrowser()
+    else
+        OpenBrowser()
+    end
 end, false)
 
 RegisterCommand('clothingbrowser', function()
-    OpenMainMenu()
+    if IsOpen then
+        CloseBrowser()
+    else
+        OpenBrowser()
+    end
 end, false)
 
 TriggerEvent('chat:addSuggestion', '/cb', 'Open clothing browser (admin tool)')
