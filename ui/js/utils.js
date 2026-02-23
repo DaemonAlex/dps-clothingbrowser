@@ -31,27 +31,22 @@ function debounce(fn, ms) {
 }
 
 /**
- * Copy text to clipboard via the Clipboard API.
+ * Copy text to clipboard via execCommand (FiveM CEF blocks the Clipboard API).
  * @param {string} text
- * @returns {Promise<boolean>}
+ * @returns {boolean}
  */
-async function copyToClipboard(text) {
-    try {
-        await navigator.clipboard.writeText(text);
-        return true;
-    } catch {
-        // Fallback: temporary textarea
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.select();
-        let ok = false;
-        try { ok = document.execCommand('copy'); } catch { /* noop */ }
-        document.body.removeChild(ta);
-        return ok;
-    }
+function copyToClipboard(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { /* noop */ }
+    document.body.removeChild(ta);
+    return ok;
 }
 
 /**

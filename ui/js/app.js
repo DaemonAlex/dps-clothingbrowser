@@ -450,9 +450,9 @@ const ClothingBrowser = (() => {
     });
 
     // Copy JSON
-    $('btn-copy-json').addEventListener('click', async () => {
+    $('btn-copy-json').addEventListener('click', () => {
         const json = buildExportJSON();
-        const ok = await copyToClipboard(json);
+        const ok = copyToClipboard(json);
         showToast(ok ? 'JSON copied to clipboard' : 'Copy failed', ok ? 'success' : 'error');
     });
 
