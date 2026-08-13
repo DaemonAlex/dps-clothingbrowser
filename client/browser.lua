@@ -486,10 +486,12 @@ RegisterNUICallback('confirmExport', function(data, cb)
     local jsonStr = data.json
     local label = data.label or ('outfit_' .. os.time())
 
-    -- Print to F8 console
-    print('^2--- OUTFIT EXPORT: ' .. label .. ' ---^0')
-    print(jsonStr)
-    print('^2--- END EXPORT ---^0')
+    -- Print full JSON to F8 console only when debugging is enabled
+    if Config.Debug then
+        print('^2--- OUTFIT EXPORT: ' .. label .. ' ---^0')
+        print(jsonStr)
+        print('^2--- END EXPORT ---^0')
+    end
 
     -- Save server-side via ox_lib callback
     lib.callback('dps-clothingbrowser:saveExport', false, function(path)
@@ -514,20 +516,26 @@ end)
 -- ============================================================
 -- COMMANDS
 -- ============================================================
-RegisterCommand('cb', function()
-    if IsOpen then
-        CloseBrowser()
-    else
-        OpenBrowser()
-    end
-end, false)
+-- Opening is toggled through the server: closing is a safe local action,
+-- but opening asks the server to verify admin access first (see
+-- dps-clothingbrowser:requestOpen). The server replies with
+-- dps-clothingbrowser:openApproved, which actually opens the UI.
+RegisterNetEvent('dps-clothingbrowser:openApproved', function()
+    OpenBrowser()
+end)
 
-RegisterCommand('clothingbrowser', function()
+local function ToggleBrowser()
     if IsOpen then
         CloseBrowser()
     else
-        OpenBrowser()
+        TriggerServerEvent('dps-clothingbrowser:requestOpen')
     end
-end, false)
+end
+
+-- restricted = true so the `command.cb` / `command.clothingbrowser` ACE
+-- is enforced. The server-side check above remains authoritative.
+RegisterCommand('cb', ToggleBrowser, true)
+
+RegisterCommand('clothingbrowser', ToggleBrowser, true)
 
 TriggerEvent('chat:addSuggestion', '/cb', 'Open clothing browser (admin tool)')

@@ -1,5 +1,9 @@
 Config = {}
 
+-- When true, full outfit JSON is dumped to the server/F8 console on export.
+-- Leave false in production to avoid console spam.
+Config.Debug = false
+
 -- GTA V component ID → name mapping
 Config.ComponentNames = {
     [0]  = 'Face',

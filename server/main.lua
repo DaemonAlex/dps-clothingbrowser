@@ -66,6 +66,13 @@ end
 -- EXPORT CALLBACK
 -- ============================================================
 lib.callback.register('dps-clothingbrowser:saveExport', function(source, jsonStr, name)
+    -- SECURITY: ox_lib callbacks are net events; any client can invoke this.
+    -- This server-side ACE check is the real authorization boundary.
+    if not IsPlayerAceAllowed(source, 'group.admin') then
+        print(('[dps-clothingbrowser] blocked saveExport from %s'):format(GetPlayerName(source) or source))
+        return nil
+    end
+
     local parsed = json.decode(jsonStr)
     if not parsed then return nil end
 
@@ -121,10 +128,27 @@ lib.callback.register('dps-clothingbrowser:saveExport', function(source, jsonStr
         playerName, label, status
     ))
 
-    -- Also print to F8 console for the exporting player
-    print('^2--- OUTFIT EXPORT: ' .. label .. ' ---^0')
-    print(jsonStr)
-    print('^2--- END EXPORT ---^0')
+    -- Also print full JSON to console only when debugging is enabled
+    if Config.Debug then
+        print('^2--- OUTFIT EXPORT: ' .. label .. ' ---^0')
+        print(jsonStr)
+        print('^2--- END EXPORT ---^0')
+    end
 
     return safeName:lower()
+end)
+
+-- ============================================================
+-- SERVER-VALIDATED OPEN
+-- ============================================================
+-- A client-side `restricted` command flag can be bypassed by a modified
+-- client, so the authoritative admin check happens here. The client asks
+-- to open; only admins get told to actually open the UI.
+RegisterNetEvent('dps-clothingbrowser:requestOpen', function()
+    local src = source
+    if not IsPlayerAceAllowed(src, 'group.admin') then
+        print(('[dps-clothingbrowser] blocked open request from %s'):format(GetPlayerName(src) or src))
+        return
+    end
+    TriggerClientEvent('dps-clothingbrowser:openApproved', src)
 end)

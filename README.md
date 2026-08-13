@@ -10,21 +10,23 @@ Admin tool for FiveM servers to visually browse, identify, and export clothing/u
 - **Snapshot Export** - Capture your entire current appearance in one click
 - **Jump to Drawable** - Go directly to a specific component + drawable ID
 - **Restore Original** - Revert all appearance changes made during the session
-- **qs-appearance Export** - All exports output valid JSON for qs-appearance job outfits (printed to F8 console + saved server-side)
+- **Database Export** - Every export is written to the `dps_outfits` MySQL table (via oxmysql). Male and female exports of the same outfit name auto-merge onto a single row (`male_data` / `female_data` columns), ready to query later.
 
 ## Dependencies
 
-- [ox_lib](https://github.com/overextended/ox_lib) (menus, input dialogs, text UI, notifications, callbacks)
+- [ox_lib](https://github.com/overextended/ox_lib) (input dialogs, notifications, server callbacks)
+- [oxmysql](https://github.com/overextended/oxmysql) (database export storage — the `dps_outfits` table is created automatically on first start)
 
 ## Installation
 
 1. Drop `dps-clothingbrowser` into your resources folder
 2. Add `ensure dps-clothingbrowser` to server.cfg (or place in a bracket folder that auto-loads)
-3. Restrict access via ACE permissions if needed:
+3. Restrict access via ACE permissions. **This is required** — the `/cb` and `/clothingbrowser` commands are registered as restricted, and the server independently verifies `group.admin` before opening the UI or writing any export to the database:
    ```
    add_ace group.admin command.cb allow
    add_ace group.admin command.clothingbrowser allow
    ```
+   Without these ACEs, non-admins cannot open the browser or write to `dps_outfits`.
 
 ## Usage
 
@@ -43,7 +45,7 @@ Admin tool for FiveM servers to visually browse, identify, and export clothing/u
 | SHIFT + Left / Right | Skip 10 drawables |
 | Up / Down Arrow | Previous / next texture |
 | E | Save current piece to outfit builder |
-| Backspace | Exit browse mode |
+| Escape | Close the browser |
 
 ### Workflow
 
@@ -53,7 +55,7 @@ Admin tool for FiveM servers to visually browse, identify, and export clothing/u
 4. Repeat for other slots (pants, hats, armor, etc.)
 5. Open **Outfit Builder** → **Export Saved Pieces**
 6. Enter outfit label, job name, and grades
-7. JSON is printed to F8 console and saved to `exports/` folder
+7. The outfit is written to the `dps_outfits` MySQL table (set `Config.Debug = true` to also dump the raw JSON to the F8/server console)
 
 ### Export Format
 

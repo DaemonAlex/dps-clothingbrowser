@@ -4,7 +4,7 @@ lua54 'yes'
 
 name 'dps-clothingbrowser'
 description 'Admin tool for browsing, identifying, and exporting clothing/uniform configurations'
-version '2.0.0'
+version '2.1.0'
 author 'DPS'
 
 ui_page 'ui/index.html'
@@ -32,4 +32,5 @@ server_scripts {
 
 dependencies {
     'oxmysql',
+    'ox_lib',
 }
